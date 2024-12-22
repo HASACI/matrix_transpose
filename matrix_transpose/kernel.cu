@@ -48,6 +48,12 @@ __global__ void cuda_copy_kernel(int* input_dest,const int* input_src,unsigned i
 __global__ void cuda_copy_by_shared_memory_kernel(int* input_dest, const int* input_src) {
 
 }
+/// <summary>
+/// 基础版的矩阵拷贝的kernel
+/// </summary>
+/// <param name="input_dest">目的地址</param>
+/// <param name="input_src">源地址</param>
+/// <returns></returns>
 __global__ void cuda_transpose_naive_kernel(int* input_dest, const int* input_src) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int idy = blockIdx.y * blockDim.y + threadIdx.y;
@@ -103,6 +109,12 @@ float cuda_copy_matrix_by_shared_memory(int* input_dest, const int* input_src,un
     cudaEventElapsedTime(&ElpausedTime, start, stop);
     return ElpausedTime;
 }
+/// <summary>
+/// 矩阵拷贝基础版
+/// </summary>
+/// <param name="input_dest">目的地址</param>
+/// <param name="input_src">源地址</param>
+/// <returns>使用的时间</returns>
 float cuda_trannspose_naive(int* input_dest,const int* input_src) {
     /*插入cude_event计时*/
     cudaEvent_t start, stop;
@@ -121,7 +133,7 @@ float cuda_trannspose_naive(int* input_dest,const int* input_src) {
     return ElpausedTime;
 }
 /// <summary>
-/// 矩阵拷贝的函数
+/// 矩阵拷贝的函数，公用接口
 /// </summary>
 /// <param name="input_dest">目的矩阵</param>
 /// <param name="input_src">源矩阵</param>
@@ -151,7 +163,14 @@ void cuda_copy_matrix(int* input_dest,int* input_src,unsigned int matrix_element
     cudaFree(matrix_input);
     cudaFree(matrix_output);
 }
-
+/// <summary>
+/// 矩阵转置调用函数，公用接口
+/// </summary>
+/// <param name="input_dest">目的矩阵地址</param>
+/// <param name="input_src">源矩阵地址</param>
+/// <param name="input_matrix_scale">矩阵的规模，默认方阵</param>
+/// <param name="kernel_name">kernel的名字</param>
+/// <param name="vFunc">使用的调用函数</param>
 void cuda_transpose_matrix(int* input_dest, const int* input_src, unsigned int input_matrix_scale,
     std::string kernel_name,
     std::function<float(int* input_dest,const int*input_src)> vFunc) {
