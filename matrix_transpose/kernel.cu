@@ -1,10 +1,11 @@
 ﻿
 /*明确目标和条件：
- 1.矩阵的操作都是方阵
+ 1.矩阵的操作前提都是方阵
  2.通过宏定义矩阵的初始规模，但是拷贝函数还是需要输入矩阵的规模
  3.可以通过宏定义调整每个线程处理的《拷贝》时的每个线程的处理数量,但《需要》传入参数
  4.可以通过宏定义调整每个线程处理的《转置》时的每个线程的处理数量，《不需要》传入参数
-*/
+ TILE???
+ */
 
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
@@ -20,8 +21,10 @@
 #define MATRIX_SCALE 1024
 #define ELEMENTS_PER_THREAD 4
 #define TILE_DIM 32
+
 int g_tile_size = 32;
 __constant__ int constant_tile_size;
+
 int src_matrix[MATRIX_SCALE][MATRIX_SCALE];
 int dest_matrix[MATRIX_SCALE][MATRIX_SCALE];
 int dest_matrix_cpu_transpose[MATRIX_SCALE][MATRIX_SCALE];
@@ -71,6 +74,45 @@ __global__ void cuda_transpose_naive_kernel(int* input_dest, const int* input_sr
     int matrix_width = constant_tile_size * blockDim.x;
     for (int i = 0; i < constant_tile_size; i += blockDim.y) {
         input_dest[(idy + i) * matrix_width + idx] = input_src[idx  * matrix_width + idy+i];
+    }
+}
+/// <summary>
+/// 使用shared memory进行矩阵转置的kernel
+/// </summary>
+/// <param name="input_dest">目的地址</param>
+/// <param name="input_src">源地址</param>
+/// <returns></returns>
+__global__ void cuda_transpose_by_shared_memory_kernel(int* input_dest, const int* input_src) {
+    int idx = threadIdx.x + blockIdx.x * TILE_DIM;
+    int idy = threadIdx.y + blockIdx.y * TILE_DIM;
+    int dest_idx = threadIdx.x + blockIdx.y * TILE_DIM;
+    int dest_idy = threadIdx.y + blockIdx.x * TILE_DIM;
+    int matrix_width = blockDim.x * constant_tile_size;
+    __shared__ int tile[TILE_DIM][TILE_DIM];
+    for (int i = 0; i < constant_tile_size; i += blockDim.y) {
+        tile[threadIdx.x][threadIdx.y + i] = input_src[(idy + i) * matrix_width + idx];
+    }
+    __syncthreads();
+    
+    for (int i = 0; i < constant_tile_size; i += blockDim.y) {
+        input_dest[(dest_idy+i)*matrix_width+dest_idx]= tile[threadIdx.y + i][threadIdx.x];
+    }
+}
+__global__ void cuda_transpose_by_shared_memory_padding_kernel(int* input_dest, const int* input_src) {
+    int idx = threadIdx.x + blockIdx.x * TILE_DIM;
+    int idy = threadIdx.y + blockIdx.y * TILE_DIM;
+    int dest_idx = threadIdx.x + blockIdx.y * TILE_DIM;
+    int dest_idy = threadIdx.y + blockIdx.x * TILE_DIM;
+    int matrix_width = blockDim.x * constant_tile_size;
+    __shared__ int tile[TILE_DIM][TILE_DIM+1];
+    for (int i = 0; i < constant_tile_size; i += blockDim.y) {
+            tile[threadIdx.x][threadIdx.y + i] = input_src[(idy + i) * matrix_width + idx];
+    }
+    __syncthreads(); // 确保所有线程都加载完数据
+
+    // 将共享内存的数据写回全局内存
+    for (int i = 0; i < constant_tile_size; i += blockDim.y) {
+            input_dest[(dest_idy + i) * matrix_width + dest_idx] = tile[threadIdx.y + i][threadIdx.x];
     }
 }
 /// <summary>
@@ -126,7 +168,7 @@ float cuda_copy_matrix_by_shared_memory(int* input_dest, const int* input_src,un
 /// <param name="input_dest">目的地址</param>
 /// <param name="input_src">源地址</param>
 /// <returns>使用的时间</returns>
-float cuda_trannspose_naive(int* input_dest,const int* input_src) {
+float cuda_transpose_naive(int* input_dest,const int* input_src) {
     /*插入cude_event计时*/
     cudaEvent_t start, stop;
     float ElpausedTime = 0;
@@ -137,6 +179,46 @@ float cuda_trannspose_naive(int* input_dest,const int* input_src) {
     dim3 gridDim(32, 32, 1);
     dim3 blockDim(g_tile_size, g_tile_size/ELEMENTS_PER_THREAD, 1);
      cuda_transpose_naive_kernel<< <gridDim, blockDim >> > (input_dest, input_src);
+    /*计算时间*/
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&ElpausedTime, start, stop);
+    return ElpausedTime;
+}
+/// <summary>
+/// 使用shared memory进行矩阵的转置
+/// </summary>
+/// <param name="input_dest">目的地址</param>
+/// <param name="input_src">源地址</param>
+/// <returns>使用的时间</returns>
+float cuda_transpose_by_shared_memory(int* input_dest, const int* input_src) {
+    /*插入cude_event计时*/
+    cudaEvent_t start, stop;
+    float ElpausedTime = 0;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
+    /*准备使用kernel*/
+    dim3 gridDim(32, 32, 1);
+    dim3 blockDim(g_tile_size, g_tile_size / ELEMENTS_PER_THREAD, 1);
+    cuda_transpose_by_shared_memory_kernel << <gridDim, blockDim >> > (input_dest, input_src);
+    /*计算时间*/
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&ElpausedTime, start, stop);
+    return ElpausedTime;
+}
+float cuda_transpose_by_shared_memory_padding(int* input_dest, const int* input_src) {
+    /*插入cude_event计时*/
+    cudaEvent_t start, stop;
+    float ElpausedTime = 0;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
+    /*准备使用kernel*/
+    dim3 gridDim(32, 32, 1);
+    dim3 blockDim(g_tile_size, g_tile_size / ELEMENTS_PER_THREAD, 1);
+    cuda_transpose_by_shared_memory_padding_kernel << <gridDim, blockDim >> > (input_dest, input_src);
     /*计算时间*/
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
@@ -265,14 +347,27 @@ void check_matrix(const int* input_dest_matrix, const int* input_src_matrix,cons
 
 int main()
 {
-    random_generate(src_matrix[0], MATRIX_SCALE * MATRIX_SCALE);
-    cuda_copy_matrix(dest_matrix[0], src_matrix[0], MATRIX_SCALE * MATRIX_SCALE,ELEMENTS_PER_THREAD,"row copy kernel",cuda_copy_matrix_by_row);//cuda矩阵行拷贝
-    check_matrix(dest_matrix[0], src_matrix[0], MATRIX_SCALE * MATRIX_SCALE);
-    cuda_copy_matrix(dest_matrix[0], src_matrix[0], MATRIX_SCALE * MATRIX_SCALE, ELEMENTS_PER_THREAD, "shared memory copy kernel", cuda_copy_matrix_by_shared_memory);//通过shared memory拷贝
-    check_matrix(dest_matrix[0], src_matrix[0], MATRIX_SCALE * MATRIX_SCALE);
-    transpose_matrix_cpu(dest_matrix_cpu_transpose[0], src_matrix[0], MATRIX_SCALE, MATRIX_SCALE);//cpu版本transpose
-    cuda_transpose_matrix(dest_matrix[0], src_matrix[0], MATRIX_SCALE, "naive transpose kernel", cuda_trannspose_naive);//矩阵转置基础版
-    check_matrix(dest_matrix[0], dest_matrix_cpu_transpose[0], MATRIX_SCALE * MATRIX_SCALE);
+    for (int i = 0; i < 10; i++) {
+        random_generate(src_matrix[0], MATRIX_SCALE * MATRIX_SCALE);
+        cuda_copy_matrix(dest_matrix[0], src_matrix[0], MATRIX_SCALE * MATRIX_SCALE, ELEMENTS_PER_THREAD, "row copy kernel", cuda_copy_matrix_by_row);//cuda矩阵行拷贝
+        check_matrix(dest_matrix[0], src_matrix[0], MATRIX_SCALE * MATRIX_SCALE);
+
+        random_generate(src_matrix[0], MATRIX_SCALE * MATRIX_SCALE);
+        cuda_copy_matrix(dest_matrix[0], src_matrix[0], MATRIX_SCALE * MATRIX_SCALE, ELEMENTS_PER_THREAD, "shared memory copy kernel", cuda_copy_matrix_by_shared_memory);//通过shared memory拷贝
+        check_matrix(dest_matrix[0], src_matrix[0], MATRIX_SCALE * MATRIX_SCALE);
+
+        transpose_matrix_cpu(dest_matrix_cpu_transpose[0], src_matrix[0], MATRIX_SCALE, MATRIX_SCALE);//cpu版本transpose
+
+        cuda_transpose_matrix(dest_matrix[0], src_matrix[0], MATRIX_SCALE, "naive transpose kernel", cuda_transpose_naive);//矩阵转置基础版
+        check_matrix(dest_matrix[0], dest_matrix_cpu_transpose[0], MATRIX_SCALE * MATRIX_SCALE);
+
+        cuda_transpose_matrix(dest_matrix[0], src_matrix[0], MATRIX_SCALE, "shared memory transpose kernel", cuda_transpose_by_shared_memory);//矩阵转置shared memory版
+        check_matrix(dest_matrix[0], dest_matrix_cpu_transpose[0], MATRIX_SCALE * MATRIX_SCALE);
+
+        cuda_transpose_matrix(dest_matrix[0], src_matrix[0], MATRIX_SCALE, "shared memory padding transpose kernel", cuda_transpose_by_shared_memory_padding);//矩阵转置shared memory y版
+        check_matrix(dest_matrix[0], dest_matrix_cpu_transpose[0], MATRIX_SCALE * MATRIX_SCALE);
+    }
+   
     return 0;
 }
 
